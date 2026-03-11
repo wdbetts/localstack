@@ -239,6 +239,14 @@ def opensearch():
 
 
 @aws_provider()
+def s3tables():
+    from localstack.services.s3tables.provider import S3TablesProvider
+
+    provider = S3TablesProvider()
+    return Service.for_provider(provider)
+
+
+@aws_provider()
 def redshift():
     from localstack.services.moto import MotoFallbackDispatcher
     from localstack.services.redshift.provider import RedshiftProvider
