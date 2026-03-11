@@ -52,4 +52,4 @@ class S3TablesStore(BaseStore):
     tables: dict[str, TableMetadata] = LocalAttribute(default=dict)
 
 
-s3tables_stores = AccountRegionBundle("s3tables", S3TablesStore)
+s3tables_stores = AccountRegionBundle("s3tables", S3TablesStore, validate=False)

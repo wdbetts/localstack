@@ -9,19 +9,9 @@ from localstack.aws.api import RequestContext, handler
 from localstack.aws.api.s3tables import (
     BadRequestException,
     ConflictException,
-    CreateNamespaceResponse,
-    CreateTableBucketResponse,
-    CreateTableResponse,
-    GetNamespaceResponse,
-    GetTableBucketResponse,
-    GetTableResponse,
-    ListNamespacesResponse,
-    ListTableBucketsResponse,
-    ListTablesResponse,
     NotFoundException,
     OpenTableFormat,
     S3TablesApi,
-    UpdateTableMetadataLocationResponse,
 )
 from localstack.services.plugins import ServiceLifecycleHook
 from localstack.services.s3tables.models import (
@@ -54,6 +44,10 @@ def _namespace_key(table_bucket_arn: str, namespace: str) -> str:
 
 def _table_key(table_bucket_arn: str, namespace: str, table_name: str) -> str:
     return f"{table_bucket_arn}|{namespace}|{table_name}"
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat() if dt else ""
 
 
 class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
@@ -107,9 +101,7 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
     # --- Table Bucket operations ---
 
     @handler("CreateTableBucket")
-    def create_table_bucket(
-        self, context: RequestContext, name: str, **kwargs
-    ) -> CreateTableBucketResponse:
+    def create_table_bucket(self, context: RequestContext, name: str, **kwargs):
         store = self.get_store(context.account_id, context.region)
         arn = _table_bucket_arn(context.account_id, context.region, name)
 
@@ -117,7 +109,6 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
             if arn in store.table_buckets:
                 raise ConflictException(f"Table bucket {name} already exists")
 
-            # Start Nessie on first table bucket creation
             nessie_manager().start()
 
             store.table_buckets[arn] = TableBucketMetadata(
@@ -128,53 +119,44 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
                 s3_bucket_name=f"s3tables-{name}-{context.account_id}",
             )
 
-        return CreateTableBucketResponse(arn=arn)
+        return {"arn": arn}
 
     @handler("GetTableBucket")
-    def get_table_bucket(
-        self, context: RequestContext, table_bucket_arn: str, **kwargs
-    ) -> GetTableBucketResponse:
+    def get_table_bucket(self, context: RequestContext, table_bucket_arn: str, **kwargs):
         store = self.get_store(context.account_id, context.region)
         meta = store.table_buckets.get(table_bucket_arn)
         if not meta:
             raise NotFoundException(f"Table bucket not found: {table_bucket_arn}")
 
-        endpoint = nessie_manager().endpoint or ""
-        return GetTableBucketResponse(
-            arn=meta.arn,
-            name=meta.name,
-            owner_account_id=meta.owner_account_id,
-            created_at=meta.created_at,
-            metadata_location=endpoint,
-        )
+        return {
+            "arn": meta.arn,
+            "name": meta.name,
+            "ownerAccountId": meta.owner_account_id,
+            "createdAt": meta.created_at,
+        }
 
     @handler("ListTableBuckets")
-    def list_table_buckets(
-        self, context: RequestContext, **kwargs
-    ) -> ListTableBucketsResponse:
+    def list_table_buckets(self, context: RequestContext, **kwargs):
         store = self.get_store(context.account_id, context.region)
-        return ListTableBucketsResponse(
-            table_buckets=[
+        return {
+            "tableBuckets": [
                 {
                     "arn": m.arn,
                     "name": m.name,
-                    "owner_account_id": m.owner_account_id,
-                    "created_at": m.created_at,
+                    "ownerAccountId": m.owner_account_id,
+                    "createdAt": m.created_at,
                 }
                 for m in store.table_buckets.values()
             ]
-        )
+        }
 
     @handler("DeleteTableBucket")
-    def delete_table_bucket(
-        self, context: RequestContext, table_bucket_arn: str, **kwargs
-    ) -> None:
+    def delete_table_bucket(self, context: RequestContext, table_bucket_arn: str, **kwargs):
         store = self.get_store(context.account_id, context.region)
         with _mutex:
             if table_bucket_arn not in store.table_buckets:
                 raise NotFoundException(f"Table bucket not found: {table_bucket_arn}")
 
-            # Check for remaining namespaces
             remaining = [k for k in store.namespaces if k.startswith(table_bucket_arn)]
             if remaining:
                 raise ConflictException("Table bucket is not empty — delete namespaces first")
@@ -186,7 +168,7 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
     @handler("CreateNamespace")
     def create_namespace(
         self, context: RequestContext, table_bucket_arn: str, namespace: list[str], **kwargs
-    ) -> CreateNamespaceResponse:
+    ):
         store = self.get_store(context.account_id, context.region)
         if table_bucket_arn not in store.table_buckets:
             raise NotFoundException(f"Table bucket not found: {table_bucket_arn}")
@@ -200,14 +182,13 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
             if key in store.namespaces:
                 raise ConflictException(f"Namespace {ns_name} already exists")
 
-            # Create in Nessie
             endpoint = nessie_manager().endpoint
             resp = requests.post(
                 f"{endpoint}v1/namespaces",
                 json={"namespace": [ns_name]},
                 timeout=10,
             )
-            if resp.status_code not in (200, 409):  # 409 = already exists, ok
+            if resp.status_code not in (200, 409):
                 LOG.error("Nessie create namespace failed: %s %s", resp.status_code, resp.text)
 
             store.namespaces[key] = NamespaceMetadata(
@@ -218,50 +199,48 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
                 owner_account_id=context.account_id,
             )
 
-        return CreateNamespaceResponse(
-            table_bucket_arn=table_bucket_arn,
-            namespace=namespace,
-        )
+        return {
+            "tableBucketARN": table_bucket_arn,
+            "namespace": namespace,
+        }
 
     @handler("GetNamespace")
     def get_namespace(
         self, context: RequestContext, table_bucket_arn: str, namespace: str, **kwargs
-    ) -> GetNamespaceResponse:
+    ):
         store = self.get_store(context.account_id, context.region)
         key = _namespace_key(table_bucket_arn, namespace)
         meta = store.namespaces.get(key)
         if not meta:
             raise NotFoundException(f"Namespace not found: {namespace}")
 
-        return GetNamespaceResponse(
-            namespace=meta.namespace,
-            created_at=meta.created_at,
-            created_by=meta.created_by,
-            owner_account_id=meta.owner_account_id,
-        )
+        return {
+            "namespace": meta.namespace,
+            "createdAt": meta.created_at,
+            "createdBy": meta.created_by,
+            "ownerAccountId": meta.owner_account_id,
+        }
 
     @handler("ListNamespaces")
-    def list_namespaces(
-        self, context: RequestContext, table_bucket_arn: str, **kwargs
-    ) -> ListNamespacesResponse:
+    def list_namespaces(self, context: RequestContext, table_bucket_arn: str, **kwargs):
         store = self.get_store(context.account_id, context.region)
-        return ListNamespacesResponse(
-            namespaces=[
+        return {
+            "namespaces": [
                 {
                     "namespace": m.namespace,
-                    "created_at": m.created_at,
-                    "created_by": m.created_by,
-                    "owner_account_id": m.owner_account_id,
+                    "createdAt": m.created_at,
+                    "createdBy": m.created_by,
+                    "ownerAccountId": m.owner_account_id,
                 }
                 for k, m in store.namespaces.items()
                 if k.startswith(table_bucket_arn)
             ]
-        )
+        }
 
     @handler("DeleteNamespace")
     def delete_namespace(
         self, context: RequestContext, table_bucket_arn: str, namespace: str, **kwargs
-    ) -> None:
+    ):
         store = self.get_store(context.account_id, context.region)
         key = _namespace_key(table_bucket_arn, namespace)
 
@@ -269,12 +248,10 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
             if key not in store.namespaces:
                 raise NotFoundException(f"Namespace not found: {namespace}")
 
-            # Check for remaining tables
             remaining = [k for k in store.tables if k.startswith(f"{table_bucket_arn}|{namespace}|")]
             if remaining:
                 raise ConflictException("Namespace is not empty — delete tables first")
 
-            # Delete from Nessie
             endpoint = nessie_manager().endpoint
             requests.delete(f"{endpoint}v1/namespaces/{namespace}", timeout=10)
 
@@ -286,7 +263,7 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
     def create_table(
         self, context: RequestContext, table_bucket_arn: str, namespace: str,
         name: str, format: OpenTableFormat, **kwargs
-    ) -> CreateTableResponse:
+    ):
         store = self.get_store(context.account_id, context.region)
         ns_key = _namespace_key(table_bucket_arn, namespace)
         if ns_key not in store.namespaces:
@@ -303,7 +280,6 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
             if tbl_key in store.tables:
                 raise ConflictException(f"Table {name} already exists in namespace {namespace}")
 
-            # Create in Nessie
             endpoint = nessie_manager().endpoint
             resp = requests.post(
                 f"{endpoint}v1/namespaces/{namespace}/tables",
@@ -338,66 +314,63 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
                 owner_account_id=context.account_id,
             )
 
-        return CreateTableResponse(table_arn=table_arn, version_token=version_token)
+        return {"tableARN": table_arn, "versionToken": version_token}
 
     @handler("GetTable")
     def get_table(
         self, context: RequestContext, table_bucket_arn: str, namespace: str,
         name: str, **kwargs
-    ) -> GetTableResponse:
+    ):
         store = self.get_store(context.account_id, context.region)
         tbl_key = _table_key(table_bucket_arn, namespace, name)
         meta = store.tables.get(tbl_key)
         if not meta:
             raise NotFoundException(f"Table not found: {namespace}/{name}")
 
-        endpoint = nessie_manager().endpoint or ""
-        return GetTableResponse(
-            name=meta.name,
-            table_arn=meta.table_arn,
-            namespace=meta.namespace,
-            version_token=meta.version_token,
-            metadata_location=endpoint,
-            warehouse_location=meta.warehouse_location,
-            created_at=meta.created_at,
-            created_by=meta.created_by,
-            modified_at=meta.modified_at,
-            modified_by=meta.modified_by,
-            owner_account_id=meta.owner_account_id,
-            format=meta.format,
-            type="customer",
-        )
+        return {
+            "name": meta.name,
+            "type": "customer",
+            "tableARN": meta.table_arn,
+            "namespace": meta.namespace,
+            "versionToken": meta.version_token,
+            "metadataLocation": meta.metadata_location or "",
+            "warehouseLocation": meta.warehouse_location,
+            "createdAt": meta.created_at,
+            "createdBy": meta.created_by,
+            "modifiedAt": meta.modified_at,
+            "modifiedBy": meta.modified_by,
+            "ownerAccountId": meta.owner_account_id,
+            "format": meta.format,
+        }
 
     @handler("ListTables")
-    def list_tables(
-        self, context: RequestContext, table_bucket_arn: str, **kwargs
-    ) -> ListTablesResponse:
+    def list_tables(self, context: RequestContext, table_bucket_arn: str, **kwargs):
         store = self.get_store(context.account_id, context.region)
         namespace_filter = kwargs.get("namespace")
         prefix = f"{table_bucket_arn}|"
         if namespace_filter:
             prefix = f"{table_bucket_arn}|{namespace_filter}|"
 
-        return ListTablesResponse(
-            tables=[
+        return {
+            "tables": [
                 {
                     "namespace": m.namespace,
                     "name": m.name,
                     "type": "customer",
-                    "table_arn": m.table_arn,
-                    "created_at": m.created_at,
-                    "modified_at": m.modified_at,
+                    "tableARN": m.table_arn,
+                    "createdAt": m.created_at,
+                    "modifiedAt": m.modified_at,
                 }
                 for k, m in store.tables.items()
                 if k.startswith(prefix)
             ]
-        )
+        }
 
     @handler("DeleteTable")
     def delete_table(
         self, context: RequestContext, table_bucket_arn: str, namespace: str,
         name: str, **kwargs
-    ) -> None:
+    ):
         store = self.get_store(context.account_id, context.region)
         tbl_key = _table_key(table_bucket_arn, namespace, name)
 
@@ -405,7 +378,6 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
             if tbl_key not in store.tables:
                 raise NotFoundException(f"Table not found: {namespace}/{name}")
 
-            # Delete from Nessie
             endpoint = nessie_manager().endpoint
             requests.delete(f"{endpoint}v1/namespaces/{namespace}/tables/{name}", timeout=10)
 
@@ -415,7 +387,7 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
     def update_table_metadata_location(
         self, context: RequestContext, table_bucket_arn: str, namespace: str,
         name: str, version_token: str, metadata_location: str, **kwargs
-    ) -> UpdateTableMetadataLocationResponse:
+    ):
         store = self.get_store(context.account_id, context.region)
         tbl_key = _table_key(table_bucket_arn, namespace, name)
 
@@ -432,10 +404,128 @@ class S3TablesProvider(S3TablesApi, ServiceLifecycleHook):
             meta.modified_at = datetime.now(UTC)
             meta.modified_by = context.account_id
 
-        return UpdateTableMetadataLocationResponse(
-            name=meta.name,
-            table_arn=meta.table_arn,
-            namespace=meta.namespace,
-            version_token=new_token,
-            metadata_location=metadata_location,
-        )
+        return {
+            "name": meta.name,
+            "tableARN": meta.table_arn,
+            "namespace": meta.namespace,
+            "versionToken": new_token,
+            "metadataLocation": metadata_location,
+        }
+
+    # --- Configuration read operations (required by Terraform) ---
+
+    @handler("GetTableBucketMaintenanceConfiguration")
+    def get_table_bucket_maintenance_configuration(
+        self, context: RequestContext, table_bucket_arn: str, **kwargs
+    ):
+        store = self.get_store(context.account_id, context.region)
+        if table_bucket_arn not in store.table_buckets:
+            raise NotFoundException(f"Table bucket not found: {table_bucket_arn}")
+        return {
+            "tableBucketARN": table_bucket_arn,
+            "configuration": {
+                "icebergUnreferencedFileRemoval": {
+                    "status": "enabled",
+                    "settings": {
+                        "icebergUnreferencedFileRemoval": {
+                            "unreferencedDays": 30,
+                            "nonCurrentDays": 30,
+                        }
+                    },
+                },
+            },
+        }
+
+    @handler("GetTableBucketEncryption")
+    def get_table_bucket_encryption(
+        self, context: RequestContext, table_bucket_arn: str, **kwargs
+    ):
+        store = self.get_store(context.account_id, context.region)
+        if table_bucket_arn not in store.table_buckets:
+            raise NotFoundException(f"Table bucket not found: {table_bucket_arn}")
+        return {
+            "encryptionConfiguration": {
+                "sseAlgorithm": "AES256",
+            },
+        }
+
+    @handler("GetTableMaintenanceConfiguration")
+    def get_table_maintenance_configuration(
+        self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str, **kwargs
+    ):
+        store = self.get_store(context.account_id, context.region)
+        tbl_key = _table_key(table_bucket_arn, namespace, name)
+        meta = store.tables.get(tbl_key)
+        if not meta:
+            raise NotFoundException(f"Table not found: {namespace}/{name}")
+        return {
+            "tableARN": meta.table_arn,
+            "configuration": {
+                "icebergCompaction": {
+                    "status": "enabled",
+                    "settings": {
+                        "icebergCompaction": {
+                            "targetFileSizeMB": 512,
+                            "strategy": "binpack",
+                        }
+                    },
+                },
+                "icebergSnapshotManagement": {
+                    "status": "enabled",
+                    "settings": {
+                        "icebergSnapshotManagement": {
+                            "minSnapshotsToKeep": 1,
+                            "maxSnapshotAgeHours": 72,
+                        }
+                    },
+                },
+            },
+        }
+
+    @handler("GetTableMaintenanceJobStatus")
+    def get_table_maintenance_job_status(
+        self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str, **kwargs
+    ):
+        store = self.get_store(context.account_id, context.region)
+        tbl_key = _table_key(table_bucket_arn, namespace, name)
+        meta = store.tables.get(tbl_key)
+        if not meta:
+            raise NotFoundException(f"Table not found: {namespace}/{name}")
+        return {
+            "tableARN": meta.table_arn,
+            "status": {},
+        }
+
+    @handler("GetTableEncryption")
+    def get_table_encryption(
+        self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str, **kwargs
+    ):
+        store = self.get_store(context.account_id, context.region)
+        tbl_key = _table_key(table_bucket_arn, namespace, name)
+        meta = store.tables.get(tbl_key)
+        if not meta:
+            raise NotFoundException(f"Table not found: {namespace}/{name}")
+        return {
+            "encryptionConfiguration": {
+                "sseAlgorithm": "AES256",
+            },
+        }
+
+    @handler("ListTagsForResource")
+    def list_tags_for_resource(self, context: RequestContext, resource_arn: str, **kwargs):
+        return {"tags": {}}
+
+    @handler("GetTableMetadataLocation")
+    def get_table_metadata_location(
+        self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str, **kwargs
+    ):
+        store = self.get_store(context.account_id, context.region)
+        tbl_key = _table_key(table_bucket_arn, namespace, name)
+        meta = store.tables.get(tbl_key)
+        if not meta:
+            raise NotFoundException(f"Table not found: {namespace}/{name}")
+        return {
+            "versionToken": meta.version_token,
+            "metadataLocation": meta.metadata_location or "",
+            "warehouseLocation": meta.warehouse_location,
+        }

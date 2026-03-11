@@ -192,6 +192,84 @@ class UpdateTableMetadataLocationResponse(TypedDict, total=False):
     metadata_location: str
 
 
+class GetTableBucketMaintenanceConfigurationRequest(ServiceRequest):
+    table_bucket_arn: str
+
+
+class IcebergCompactionSettings(TypedDict, total=False):
+    target_file_size_mb: int
+
+
+class TableBucketMaintenanceConfigurationValue(TypedDict, total=False):
+    status: str
+    settings: dict
+
+
+class GetTableBucketMaintenanceConfigurationResponse(TypedDict, total=False):
+    table_bucket_arn: str
+    configuration: dict[str, TableBucketMaintenanceConfigurationValue]
+
+
+class GetTableBucketEncryptionRequest(ServiceRequest):
+    table_bucket_arn: str
+
+
+class GetTableBucketEncryptionResponse(TypedDict, total=False):
+    encryption_configuration: dict
+
+
+class GetTableMaintenanceConfigurationRequest(ServiceRequest):
+    table_bucket_arn: str
+    namespace: str
+    name: str
+
+
+class GetTableMaintenanceConfigurationResponse(TypedDict, total=False):
+    table_arn: str
+    configuration: dict
+
+
+class GetTableMaintenanceJobStatusRequest(ServiceRequest):
+    table_bucket_arn: str
+    namespace: str
+    name: str
+
+
+class GetTableMaintenanceJobStatusResponse(TypedDict, total=False):
+    table_arn: str
+    status: dict
+
+
+class GetTableEncryptionRequest(ServiceRequest):
+    table_bucket_arn: str
+    namespace: str
+    name: str
+
+
+class GetTableEncryptionResponse(TypedDict, total=False):
+    encryption_configuration: dict
+
+
+class ListTagsForResourceRequest(ServiceRequest):
+    resource_arn: str
+
+
+class ListTagsForResourceResponse(TypedDict, total=False):
+    tags: dict[str, str]
+
+
+class GetTableMetadataLocationRequest(ServiceRequest):
+    table_bucket_arn: str
+    namespace: str
+    name: str
+
+
+class GetTableMetadataLocationResponse(TypedDict, total=False):
+    version_token: str
+    metadata_location: str
+    warehouse_location: str
+
+
 # --- Exceptions ---
 
 class NotFoundException(ServiceException):
@@ -295,4 +373,46 @@ class S3TablesApi:
         self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str,
         version_token: str, metadata_location: str, **kwargs
     ) -> UpdateTableMetadataLocationResponse:
+        raise NotImplementedError
+
+    @handler("GetTableBucketMaintenanceConfiguration")
+    def get_table_bucket_maintenance_configuration(
+        self, context: RequestContext, table_bucket_arn: str, **kwargs
+    ) -> GetTableBucketMaintenanceConfigurationResponse:
+        raise NotImplementedError
+
+    @handler("GetTableBucketEncryption")
+    def get_table_bucket_encryption(
+        self, context: RequestContext, table_bucket_arn: str, **kwargs
+    ) -> GetTableBucketEncryptionResponse:
+        raise NotImplementedError
+
+    @handler("GetTableMaintenanceConfiguration")
+    def get_table_maintenance_configuration(
+        self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str, **kwargs
+    ) -> GetTableMaintenanceConfigurationResponse:
+        raise NotImplementedError
+
+    @handler("GetTableMaintenanceJobStatus")
+    def get_table_maintenance_job_status(
+        self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str, **kwargs
+    ) -> GetTableMaintenanceJobStatusResponse:
+        raise NotImplementedError
+
+    @handler("GetTableEncryption")
+    def get_table_encryption(
+        self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str, **kwargs
+    ) -> GetTableEncryptionResponse:
+        raise NotImplementedError
+
+    @handler("ListTagsForResource")
+    def list_tags_for_resource(
+        self, context: RequestContext, resource_arn: str, **kwargs
+    ) -> ListTagsForResourceResponse:
+        raise NotImplementedError
+
+    @handler("GetTableMetadataLocation")
+    def get_table_metadata_location(
+        self, context: RequestContext, table_bucket_arn: str, namespace: str, name: str, **kwargs
+    ) -> GetTableMetadataLocationResponse:
         raise NotImplementedError

@@ -3,6 +3,7 @@ import time
 
 import requests
 
+from localstack import config
 from localstack.utils.container_utils.container_client import (
     ContainerClient,
     DockerContainerStatus,
@@ -26,14 +27,28 @@ class NessieManager:
 
     def __init__(self, docker_client: ContainerClient | None = None):
         self._docker_client = docker_client or DOCKER_CLIENT
-        self._port: int | None = None
+        self._host_port: int | None = None
         self._started = False
 
     @property
     def endpoint(self) -> str | None:
-        if not self._started or self._port is None:
+        if not self._started:
             return None
-        return f"http://localhost:{self._port}/iceberg/"
+        host, port = self._resolve_nessie_address()
+        return f"http://{host}:{port}/iceberg/"
+
+    def _resolve_nessie_address(self) -> tuple[str, int]:
+        """Return (host, port) to reach Nessie.
+        Inside Docker: use container IP + internal port (19120).
+        On host: use localhost + mapped host port."""
+        if config.is_in_docker:
+            try:
+                ip = self._docker_client.get_container_ip(NESSIE_CONTAINER_NAME)
+                if ip:
+                    return ip, NESSIE_INTERNAL_PORT
+            except Exception:
+                LOG.debug("Could not get Nessie container IP, falling back to localhost")
+        return "localhost", self._host_port or NESSIE_INTERNAL_PORT
 
     def start(self, localstack_s3_endpoint: str = "http://host.docker.internal:4566") -> str:
         """Start the Nessie container if not already running. Returns the Iceberg REST endpoint URL."""
@@ -46,7 +61,6 @@ class NessieManager:
         status = self._docker_client.get_container_status(NESSIE_CONTAINER_NAME)
         if status == DockerContainerStatus.UP:
             LOG.info("Nessie container already running, reusing.")
-            self._port = self._get_mapped_port()
             self._started = True
             return self.endpoint
 
@@ -54,9 +68,9 @@ class NessieManager:
         if status != DockerContainerStatus.NON_EXISTENT:
             self._docker_client.remove_container(NESSIE_CONTAINER_NAME, force=True)
 
-        self._port = get_free_tcp_port()
+        self._host_port = get_free_tcp_port()
         port_mappings = PortMappings()
-        port_mappings.add(self._port, NESSIE_INTERNAL_PORT)
+        port_mappings.add(self._host_port, NESSIE_INTERNAL_PORT)
 
         env_vars = {
             "nessie.catalog.default-warehouse": "warehouse",
@@ -103,7 +117,7 @@ class NessieManager:
             LOG.debug("Error removing Nessie container", exc_info=True)
 
         self._started = False
-        self._port = None
+        self._host_port = None
 
     def _is_running(self) -> bool:
         try:
@@ -114,18 +128,10 @@ class NessieManager:
         except Exception:
             return False
 
-    def _get_mapped_port(self) -> int:
-        info = self._docker_client.inspect_container(NESSIE_CONTAINER_NAME)
-        ports = info.get("Ports", "")
-        # Parse port mapping from inspect output — format varies by client
-        # Fall back to stored port if parsing fails
-        if self._port:
-            return self._port
-        raise RuntimeError("Cannot determine Nessie mapped port")
-
     def _wait_for_healthy(self):
         """Poll Nessie's config endpoint until it responds."""
-        url = f"http://localhost:{self._port}/iceberg/v1/config"
+        host, port = self._resolve_nessie_address()
+        url = f"http://{host}:{port}/iceberg/v1/config"
         deadline = time.time() + HEALTH_CHECK_TIMEOUT
         while time.time() < deadline:
             try:
